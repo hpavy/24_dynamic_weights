@@ -6,7 +6,7 @@ print(device)
 
 ############# VARIABLES ################
 
-folder_result_name = "8_model_3_case_2_zoom"  # name of the result folder
+folder_result_name = "3_modele_3_case_2"  # name of the result folder
 
 # Uniquement si nouveau modèle
 
@@ -18,10 +18,10 @@ hyper_param_init = {
     "nb_epoch": 10000,  # epoch number
     "save_rate": 50,  # rate to save
     "dynamic_weights": True,
-    "lr_weights": 1e-3,
-    "weight_data": 10/21,
-    "weight_pde": 10/21,
-    "weight_border": 1/21,
+    "lr_weights": 1e-1,
+    "weight_data": 1.,
+    "weight_pde": 1.,
+    "weight_border": 1.,
     "batch_size": 10000,  # for the pde
     "nb_points_pde": 1000000,  # Total number of pde points
     "Re": 100,

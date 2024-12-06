@@ -108,15 +108,6 @@ def train(
                 loss_batch_train["pde"].append(loss_pde.item())
                 loss_batch_train["border"].append(loss_border_cylinder.item())
 
-            if dynamic_weights:
-                weight_data_hat += lr_weights * loss_data
-                weight_pde_hat += lr_weights * loss_pde
-                weight_border_hat += lr_weights * loss_border_cylinder
-                sum_weight = weight_data_hat + weight_pde_hat + weight_border_hat
-                weight_data = weight_data_hat / sum_weight
-                weight_border = weight_border_hat / sum_weight
-                weight_pde = weight_pde_hat / sum_weight
-
         # Pour le test :
         model.eval()
 
@@ -159,6 +150,16 @@ def train(
         loss_test = weight_data * loss_test_data + weight_pde * \
             loss_test_pde + weight_border * loss_test_border
         scheduler.step()
+
+        # Weights 
+        if dynamic_weights:
+            weight_data_hat = weight_data + lr_weights * np.mean(loss_batch_train["data"])
+            weight_pde_hat = weight_pde + lr_weights * np.mean(loss_batch_train["pde"])
+            weight_border_hat = weight_border + lr_weights * np.mean(loss_batch_train["border"])
+            sum_weight = weight_data_hat + weight_pde_hat + weight_border_hat
+            weight_data = weight_data_hat / sum_weight
+            weight_border = weight_border_hat / sum_weight
+            weight_pde = weight_pde_hat / sum_weight
         with torch.no_grad():
             test_loss["total"].append(loss_test.item())
             test_loss["data"].append(loss_test_data.item())
@@ -186,10 +187,10 @@ def train(
             file=f,
         )
         print(
-            f"Weights  : data: {weight_data}, pde: {weight_pde}, border: {weight_border}"
+            f"Weights  : ------------, data: {weight_data:.1e},   pde: {weight_pde:.1e},   border: {weight_border:.1e}"
         )
         print(
-            f"Weights  : data: {weight_data}, pde: {weight_pde}, border: {weight_border}",
+            f"Weights  : ------------, data: {weight_data:.1e},   pde: {weight_pde:.1e},   border: {weight_border:.1e}",
             file=f,
         )
 
