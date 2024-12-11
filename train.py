@@ -1,9 +1,10 @@
-import torch
 from model import pde
+import torch
 import numpy as np
 import time
 from utils import read_csv, write_csv
 from pathlib import Path
+from torch.utils.data import Dataset, DataLoader
 
 
 def train(
@@ -49,64 +50,114 @@ def train(
         + "--------------",
         file=f,
     )
-    weight_border = weight_border_init
-    weight_data = weight_data_init
-    weight_pde = weight_pde_init
+    stream_data = torch.cuda.Stream()
+    stream_pde = torch.cuda.Stream()
+    stream_border = torch.cuda.Stream()
+    weight_border = torch.tensor(weight_border_init, device=device)
+    weight_data = torch.tensor(weight_data_init, device=device)
+    weight_pde = torch.tensor(weight_pde_init, device=device)
+
+    nb_batch = len(X_pde) // batch_size
+    batch_size = torch.tensor(batch_size, device=device)
+
+    ya0 = torch.tensor(ya0, device=device)
+    w_0 = torch.tensor(w_0, device=device)
+    Re = torch.tensor(Re, device=device)
+    x_std = torch.tensor(mean_std['x_std'], device=device)
+    y_std = torch.tensor(mean_std['y_std'], device=device)
+    u_mean = torch.tensor(mean_std['u_mean'], device=device)
+    v_mean = torch.tensor(mean_std['v_mean'], device=device)
+    p_std = torch.tensor(mean_std['p_std'], device=device)
+    t_std = torch.tensor(mean_std['t_std'], device=device)
+    t_mean = torch.tensor(mean_std['t_mean'], device=device)
+    u_std = torch.tensor(mean_std['u_std'], device=device)
+    v_std = torch.tensor(mean_std['v_std'], device=device)
+    L_adim = torch.tensor(param_adim['L'], device=device)
+    V_adim = torch.tensor(param_adim['V'], device=device)
+
+    class pde_dataset(Dataset):
+        def __init__(self, X_pde):
+            self.X_pde = X_pde
+        def __getitem__(self, item):
+            return self.X_pde[item, :]
+        def __len__(self):
+            return self.X_pde.size(0)
+    
+    dataset = pde_dataset(X_pde.to('cpu').detach())
+    dataloader = DataLoader(dataset, batch_size=batch_size.item(), shuffle=True)
+  
 
     for epoch in range(len(train_loss["total"]), nb_it_tot):
-        loss_batch_train = {"total": [], "data": [], "pde": [], 'border': []}
-        for batch in range(len(X_pde) // batch_size):
-            model.train()  # on dit qu'on va entrainer (on a le dropout)
-            # loss du pde
-            X_pde_batch = X_pde[batch *
-                                batch_size: (batch + 1) * batch_size, :]
-            pred_pde = model(X_pde_batch)
-            pred_pde1, pred_pde2, pred_pde3 = pde(
-                pred_pde,
-                X_pde_batch,
-                Re=Re,
-                x_std=mean_std['x_std'],
-                y_std=mean_std['y_std'],
-                u_mean=mean_std['u_mean'],
-                v_mean=mean_std['v_mean'],
-                p_std=mean_std['p_std'],
-                t_std=mean_std['t_std'],
-                u_std=mean_std['u_std'],
-                v_std=mean_std['v_std'],
-                ya0=ya0,
-                w_0=w_0,
-                param_adim=param_adim,
-                mean_std=mean_std
-            )
-            loss_pde = (
-                torch.mean(pred_pde1**2)
-                + torch.mean(pred_pde2**2)
-                + torch.mean(pred_pde3**2)
-            )
+        time_start_batch = time.time()
+        total_batch = torch.tensor([0.], device=device)
+        data_batch = torch.tensor([0.], device=device)
+        pde_batch = torch.tensor([0.], device=device)
+        border_batch = torch.tensor([0.], device=device)
+        model.train()  # on dit qu'on va entrainer (on a le dropout)
+        # for batch in torch.tensor([k for k in range(nb_batch)], device=device):
+        for batch, X_pde_batch in enumerate(dataloader):
+            X_pde_batch = X_pde_batch.to(device).requires_grad_()
+            
 
-            # loss des points de data
-            pred_data = model(X_train)
-            loss_data = loss(U_train, pred_data)
+            with torch.cuda.stream(stream_pde):
+                # loss du pde
+                # X_pde_batch = X_pde[batch *
+                #                     batch_size: (batch + 1) * batch_size, :]
+                pred_pde = model(X_pde_batch)
+                pred_pde1, pred_pde2, pred_pde3 = pde(
+                    pred_pde,
+                    X_pde_batch,
+                    Re=Re,
+                    x_std=x_std,
+                    y_std=y_std,
+                    u_mean=u_mean,
+                    v_mean=v_mean,
+                    p_std=p_std,
+                    t_std=t_std,
+                    t_mean=t_mean,
+                    u_std=u_std,
+                    v_std=v_std,
+                    ya0=ya0,
+                    w_0=w_0,
+                    L_adim=L_adim,
+                    V_adim=V_adim
+                )
+                loss_pde = (
+                    torch.mean(pred_pde1**2)
+                    + torch.mean(pred_pde2**2)
+                    + torch.mean(pred_pde3**2)
+                )
 
-            # loss du border
-            pred_border = model(X_border)
-            goal_border = torch.tensor([-mean_std['u_mean']/mean_std['u_std'], -mean_std['v_mean'] /
-                                       mean_std['v_std']], dtype=torch.float32).expand(pred_border.shape[0], 2).to(device)
-            loss_border_cylinder = loss(
-                pred_border[:, :2], goal_border)  # (MSE)
+            with torch.cuda.stream(stream_data):
+                # loss des points de data
+                pred_data = model(X_train)
+                loss_data = loss(U_train, pred_data)
+                
 
+            with torch.cuda.stream(stream_border):
+                # loss du border
+               
+                pred_border = model(X_border)
+                goal_border = torch.tensor([-mean_std['u_mean']/mean_std['u_std'], -mean_std['v_mean'] / mean_std['v_std']],
+                    dtype=torch.float32
+                    ).expand(pred_border.shape[0], 2).to(device)
+                loss_border_cylinder = loss(
+                    pred_border[:, :2], goal_border)  # (MSE)
+                    
+                
+            torch.cuda.synchronize()
             loss_totale = weight_data * loss_data + weight_pde * \
                 loss_pde + weight_border * loss_border_cylinder
 
             # Backpropagation
-            loss_totale.backward(retain_graph=True)
+            loss_totale.backward()
             optimizer.step()
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             with torch.no_grad():
-                loss_batch_train["total"].append(loss_totale.item())
-                loss_batch_train["data"].append(loss_data.item())
-                loss_batch_train["pde"].append(loss_pde.item())
-                loss_batch_train["border"].append(loss_border_cylinder.item())
+                total_batch += loss_totale.item()
+                data_batch += loss_data.item()
+                pde_batch += loss_pde.item()
+                border_batch += loss_border_cylinder.item()
 
         # Pour le test :
         model.eval()
@@ -117,58 +168,65 @@ def train(
             test_pde,
             X_test_pde,
             Re=Re,
-            x_std=mean_std['x_std'],
-            y_std=mean_std['y_std'],
-            u_mean=mean_std['u_mean'],
-            v_mean=mean_std['v_mean'],
-            p_std=mean_std['p_std'],
-            t_std=mean_std['t_std'],
-            u_std=mean_std['u_std'],
-            v_std=mean_std['v_std'],
+            x_std=x_std,
+            y_std=y_std,
+            u_mean=u_mean,
+            v_mean=v_mean,
+            p_std=p_std,
+            t_std=t_std,
+            t_mean=t_mean,
+            u_std=u_std,
+            v_std=v_std,
             ya0=ya0,
             w_0=w_0,
-            param_adim=param_adim,
-            mean_std=mean_std
+            L_adim=L_adim,
+            V_adim=V_adim
+            
         )
-        loss_test_pde = (
-            torch.mean(test_pde1**2)
-            + torch.mean(test_pde2**2)
-            + torch.mean(test_pde3**2)
-        )
-        # loss de la data
-        test_data = model(X_test_data)
-        loss_test_data = loss(U_test_data, test_data)  # (MSE)
+        with torch.no_grad():
+            loss_test_pde = (
+                torch.mean(test_pde1**2)
+                + torch.mean(test_pde2**2)
+                + torch.mean(test_pde3**2)
+            )
+            # loss de la data
+            test_data = model(X_test_data)
+            loss_test_data = loss(U_test_data, test_data)  # (MSE)
 
-        # loss des bords
-        pred_border_test = model(X_border_test)
-        goal_border_test = torch.tensor([-mean_std['u_mean']/mean_std['u_std'], -mean_std['v_mean'] /
-                                        mean_std['v_std']], dtype=torch.float32).expand(pred_border_test.shape[0], 2).to(device)
-        loss_test_border = loss(
-            pred_border_test[:, :2], goal_border_test)  # (MSE)
+            # loss des bords
+            pred_border_test = model(X_border_test)
+            goal_border_test = torch.tensor([-mean_std['u_mean']/mean_std['u_std'], -mean_std['v_mean'] /
+                                            mean_std['v_std']], dtype=torch.float32, device=device).expand(pred_border_test.shape[0], 2)
+            loss_test_border = loss(
+                pred_border_test[:, :2], goal_border_test)  # (MSE)
 
-        # loss totale
-        loss_test = weight_data * loss_test_data + weight_pde * \
-            loss_test_pde + weight_border * loss_test_border
+            # loss totale
+            loss_test = weight_data * loss_test_data + weight_pde * \
+                loss_test_pde + weight_border * loss_test_border
         scheduler.step()
 
-        # Weights 
-        if dynamic_weights:
-            weight_data_hat = weight_data + lr_weights * np.mean(loss_batch_train["data"])
-            weight_pde_hat = weight_pde + lr_weights * np.mean(loss_batch_train["pde"])
-            weight_border_hat = weight_border + lr_weights * np.mean(loss_batch_train["border"])
-            sum_weight = weight_data_hat + weight_pde_hat + weight_border_hat
-            weight_data = weight_data_hat / sum_weight
-            weight_border = weight_border_hat / sum_weight
-            weight_pde = weight_pde_hat / sum_weight
+        # Weights
         with torch.no_grad():
+            total_batch /= nb_batch
+            data_batch /= nb_batch
+            pde_batch /= nb_batch
+            border_batch /= nb_batch
+            if dynamic_weights:
+                weight_data_hat = weight_data + lr_weights * data_batch
+                weight_pde_hat = weight_pde + lr_weights * pde_batch
+                weight_border_hat = weight_border + lr_weights * border_batch
+                sum_weight = weight_data_hat + weight_pde_hat + weight_border_hat
+                weight_data = weight_data_hat / sum_weight
+                weight_border = weight_border_hat / sum_weight
+                weight_pde = weight_pde_hat / sum_weight
             test_loss["total"].append(loss_test.item())
             test_loss["data"].append(loss_test_data.item())
             test_loss["pde"].append(loss_test_pde.item())
             test_loss["border"].append(loss_test_border.item())
-            train_loss["total"].append(np.mean(loss_batch_train["total"]))
-            train_loss["data"].append(np.mean(loss_batch_train["data"]))
-            train_loss["pde"].append(np.mean(loss_batch_train["pde"]))
-            train_loss["border"].append(np.mean(loss_batch_train["border"]))
+            train_loss["total"].append(total_batch.item())
+            train_loss["data"].append(data_batch.item())
+            train_loss["pde"].append(pde_batch.item())
+            train_loss["border"].append(border_batch.item())
 
         print(f"---------------------\nEpoch {epoch+1}/{nb_it_tot} :")
         print(f"---------------------\nEpoch {epoch+1}/{nb_it_tot} :", file=f)
@@ -187,43 +245,48 @@ def train(
             file=f,
         )
         print(
-            f"Weights  : ------------, data: {weight_data:.1e},   pde: {weight_pde:.1e},   border: {weight_border:.1e}"
+            f"Weights  : ------------, data: {weight_data.item():.1e},   pde: {weight_pde.item():.1e},   border: {weight_border.item():.1e}"
         )
         print(
-            f"Weights  : ------------, data: {weight_data:.1e},   pde: {weight_pde:.1e},   border: {weight_border:.1e}",
+            f"Weights  : ------------, data: {weight_data.item():.1e},   pde: {weight_pde.item():.1e},   border: {weight_border.item():.1e}",
             file=f,
         )
+
 
         print(f"time: {time.time()-time_start:.0f}s")
         print(f"time: {time.time()-time_start:.0f}s", file=f)
 
-        if (epoch + 1) % save_rate == 0:
-            dossier_midle = Path(
-                folder_result + f"/epoch{len(train_loss['total'])}")
-            dossier_midle.mkdir(parents=True, exist_ok=True)
-            torch.save(
-                {
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "scheduler_state_dict": scheduler.state_dict(),
-                    "weights": {
-                        "weight_data": weight_data,
-                        "weight_pde": weight_pde,
-                        "weight_border": weight_border
-                    }
-                },
-                folder_result
-                + f"/epoch{len(train_loss['total'])}"
-                + "/model_weights.pth",
-            )
+        print(f"time_epoch: {time.time()-time_start_batch:.0f}s")
+        print(f"time: {time.time()-time_start_batch:.0f}s", file=f)
 
-            write_csv(
-                train_loss,
-                folder_result + f"/epoch{len(train_loss['total'])}",
-                file_name="/train_loss.csv",
-            )
-            write_csv(
-                test_loss,
-                folder_result + f"/epoch{len(train_loss['total'])}",
-                file_name="/test_loss.csv",
-            )
+        if (epoch + 1) % save_rate == 0:
+            with torch.no_grad():
+                dossier_midle = Path(
+                    folder_result + f"/epoch{len(train_loss['total'])}")
+                dossier_midle.mkdir(parents=True, exist_ok=True)
+                torch.save(
+                    {
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict(),
+                        "weights": {
+                            "weight_data": weight_data,
+                            "weight_pde": weight_pde,
+                            "weight_border": weight_border
+                        }
+                    },
+                    folder_result
+                    + f"/epoch{len(train_loss['total'])}"
+                    + "/model_weights.pth",
+                )
+
+                write_csv(
+                    train_loss,
+                    folder_result + f"/epoch{len(train_loss['total'])}",
+                    file_name="/train_loss.csv",
+                )
+                write_csv(
+                    test_loss,
+                    folder_result + f"/epoch{len(train_loss['total'])}",
+                    file_name="/test_loss.csv",
+                )

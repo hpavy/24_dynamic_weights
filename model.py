@@ -1,9 +1,9 @@
-from deepxrte.gradients import gradient, derivee_seconde
 import torch
 import torch.nn as nn
+from torch.autograd import grad
 
 
-def pde(U, input, Re, x_std, y_std, u_mean, v_mean, p_std, t_std, u_std, v_std, ya0, w_0, param_adim, mean_std):
+def pde(U, input, Re, x_std, y_std, u_mean, v_mean, p_std, t_std, t_mean, u_std, v_std, ya0, w_0, L_adim, V_adim):
     # je sais qu'il fonctionne bien ! Il a été vérifié
     """Calcul la pde
 
@@ -14,18 +14,25 @@ def pde(U, input, Re, x_std, y_std, u_mean, v_mean, p_std, t_std, u_std, v_std, 
     u = U[:, 0].reshape(-1, 1)
     v = U[:, 1].reshape(-1, 1)
     p = U[:, 2].reshape(-1, 1)
-    u_x = gradient(U, input, i=0, j=0, keep_gradient=True).reshape(-1, 1)
-    u_y = gradient(U, input, i=0, j=1, keep_gradient=True).reshape(-1, 1)
-    p_x = gradient(U, input, i=2, j=0, keep_gradient=True).reshape(-1, 1)
-    p_y = gradient(U, input, i=2, j=1, keep_gradient=True).reshape(-1, 1)
-    u_t = gradient(U, input, i=0, j=2, keep_gradient=True).reshape(-1, 1)
-    v_x = gradient(U, input, i=1, j=0, keep_gradient=True).reshape(-1, 1)
-    v_y = gradient(U, input, i=1, j=1, keep_gradient=True).reshape(-1, 1)
-    v_t = gradient(U, input, i=1, j=2, keep_gradient=True).reshape(-1, 1)
-    u_xx = derivee_seconde(u, input, j=0).reshape(-1, 1)
-    u_yy = derivee_seconde(u, input, j=1).reshape(-1, 1)
-    v_xx = derivee_seconde(v, input, j=0).reshape(-1, 1)
-    v_yy = derivee_seconde(v, input, j=1).reshape(-1, 1)
+
+    u_X = grad(outputs=u, inputs=input, grad_outputs=torch.ones_like(u), retain_graph=True, create_graph=True)[0]
+    v_X = grad(outputs=v, inputs=input, grad_outputs=torch.ones_like(v), retain_graph=True, create_graph=True)[0]
+    p_X = grad(outputs=p, inputs=input, grad_outputs=torch.ones_like(p), retain_graph=True, create_graph=True)[0]
+    u_x = u_X[:, 0].reshape(-1, 1)
+    u_y = u_X[:, 1].reshape(-1, 1)
+    u_t = u_X[:, 2].reshape(-1, 1)
+    v_x = v_X[:, 0].reshape(-1, 1)
+    v_y = v_X[:, 1].reshape(-1, 1)
+    v_t = v_X[:, 2].reshape(-1, 1)
+    p_x = p_X[:, 0].reshape(-1, 1)
+    p_y = p_X[:, 1].reshape(-1, 1)
+    
+    # Dans les prochaines lignes on peut améliorer le code (on fait des calculs inutiles)
+    u_xx = grad(outputs=u_x, inputs=input, grad_outputs=torch.ones_like(u_x), retain_graph=True)[0][:, 0].reshape(-1, 1)
+    u_yy = grad(outputs=u_y, inputs=input, grad_outputs=torch.ones_like(u_y), retain_graph=True)[0][:, 1].reshape(-1, 1)
+    v_xx = grad(outputs=v_x, inputs=input, grad_outputs=torch.ones_like(v_x), retain_graph=True)[0][:, 0].reshape(-1, 1)
+    v_yy = grad(outputs=v_y, inputs=input, grad_outputs=torch.ones_like(v_y), retain_graph=True)[0][:, 1].reshape(-1, 1)
+
     equ_1 = (
         (u_std / t_std) * u_t
         + (u * u_std + u_mean) * (u_std / x_std) * u_x
@@ -39,9 +46,9 @@ def pde(U, input, Re, x_std, y_std, u_mean, v_mean, p_std, t_std, u_std, v_std, 
         + (v * v_std + v_mean) * (v_std / y_std) * v_y
         + (p_std / y_std) * p_y
         - (1 / Re) * ((v_std / (x_std**2)) * v_xx + (v_std / (y_std**2)) * v_yy)
-        - ya0 * w_0**2 * param_adim['L'] * torch.cos(
-            (w_0 * mean_std['t_std'] * input[:, 2])/(mean_std['t_mean']))
-        / param_adim['V']**2
+        - ya0 * w_0**2 * L_adim * torch.cos(
+            (w_0 * t_std * input[:, 2])/(t_mean))
+        / V_adim**2
     )
     equ_3 = (u_std / x_std) * u_x + (v_std / y_std) * v_y
     return equ_1, equ_2, equ_3
