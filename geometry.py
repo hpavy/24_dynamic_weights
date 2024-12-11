@@ -85,7 +85,20 @@ class Rectangle:
 
 
 class RectangleWithoutCylinder:
-    def __init__(self, x_max, y_max, t_min, t_max, x_cyl, y_cyl, r_cyl, mean_std, param_adim, x_min=0, y_min=0):
+    def __init__(
+        self,
+        x_max,
+        y_max,
+        t_min,
+        t_max,
+        x_cyl,
+        y_cyl,
+        r_cyl,
+        mean_std,
+        param_adim,
+        x_min=0,
+        y_min=0,
+    ):
         """on crée ici un rectangle
 
         Args:
@@ -115,12 +128,16 @@ class RectangleWithoutCylinder:
         while tensor_final.shape[0] < n:
             n_left = n - tensor_final.shape[0]
             test = minn + max_min * torch.from_numpy(lhs(3, n_left))
-            test_x_dim = (test[:, 0]*self.mean_std['x_std'] +
-                          self.mean_std['x_mean'])*self.param_adim['L']
-            test_y_dim = (test[:, 1]*self.mean_std['y_std'] +
-                          self.mean_std['y_mean'])*self.param_adim['L']
-            test_good = test[((test_x_dim-self.x_cyl)**2 +
-                              (test_y_dim-self.y_cyl)**2) > self.r_cyl**2]
+            test_x_dim = (
+                test[:, 0] * self.mean_std["x_std"] + self.mean_std["x_mean"]
+            ) * self.param_adim["L"]
+            test_y_dim = (
+                test[:, 1] * self.mean_std["y_std"] + self.mean_std["y_mean"]
+            ) * self.param_adim["L"]
+            test_good = test[
+                ((test_x_dim - self.x_cyl) ** 2 + (test_y_dim - self.y_cyl) ** 2)
+                > self.r_cyl**2
+            ]
             tensor_final = torch.concatenate((tensor_final, test_good))
         return tensor_final.to(dtype=torch.float32).requires_grad_()
 

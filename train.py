@@ -1,10 +1,8 @@
 from model import pde
 import torch
-import numpy as np
 import time
-from utils import read_csv, write_csv
+from utils import write_csv
 from pathlib import Path
-from torch.utils.data import Dataset, DataLoader
 
 
 def train(
@@ -37,7 +35,7 @@ def train(
     mean_std,
     ya0,
     w_0,
-    param_adim
+    param_adim,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     nb_it_tot = nb_epoch + len(train_loss["total"])
@@ -63,46 +61,38 @@ def train(
     ya0 = torch.tensor(ya0, device=device)
     w_0 = torch.tensor(w_0, device=device)
     Re = torch.tensor(Re, device=device)
-    x_std = torch.tensor(mean_std['x_std'], device=device)
-    y_std = torch.tensor(mean_std['y_std'], device=device)
-    u_mean = torch.tensor(mean_std['u_mean'], device=device)
-    v_mean = torch.tensor(mean_std['v_mean'], device=device)
-    p_std = torch.tensor(mean_std['p_std'], device=device)
-    t_std = torch.tensor(mean_std['t_std'], device=device)
-    t_mean = torch.tensor(mean_std['t_mean'], device=device)
-    u_std = torch.tensor(mean_std['u_std'], device=device)
-    v_std = torch.tensor(mean_std['v_std'], device=device)
-    L_adim = torch.tensor(param_adim['L'], device=device)
-    V_adim = torch.tensor(param_adim['V'], device=device)
-
-    class pde_dataset(Dataset):
-        def __init__(self, X_pde):
-            self.X_pde = X_pde
-        def __getitem__(self, item):
-            return self.X_pde[item, :]
-        def __len__(self):
-            return self.X_pde.size(0)
-    
-    dataset = pde_dataset(X_pde.to('cpu').detach())
-    dataloader = DataLoader(dataset, batch_size=batch_size.item(), shuffle=True)
-  
+    x_std = torch.tensor(mean_std["x_std"], device=device)
+    y_std = torch.tensor(mean_std["y_std"], device=device)
+    u_mean = torch.tensor(mean_std["u_mean"], device=device)
+    v_mean = torch.tensor(mean_std["v_mean"], device=device)
+    p_std = torch.tensor(mean_std["p_std"], device=device)
+    t_std = torch.tensor(mean_std["t_std"], device=device)
+    t_mean = torch.tensor(mean_std["t_mean"], device=device)
+    u_std = torch.tensor(mean_std["u_std"], device=device)
+    v_std = torch.tensor(mean_std["v_std"], device=device)
+    L_adim = torch.tensor(param_adim["L"], device=device)
+    V_adim = torch.tensor(param_adim["V"], device=device)
+    X_border = X_border.to(device)
+    X_border_test = X_border_test.to(device)
+    X_pde = X_pde.to(device)
+    X_pde_test = X_pde_test.to(device)
+    X_train = X_train.to(device)
+    U_train = U_train.to(device)
+    X_test_data = X_test_data.to(device)
+    U_test_data = U_test_data.to(device)
 
     for epoch in range(len(train_loss["total"]), nb_it_tot):
         time_start_batch = time.time()
-        total_batch = torch.tensor([0.], device=device)
-        data_batch = torch.tensor([0.], device=device)
-        pde_batch = torch.tensor([0.], device=device)
-        border_batch = torch.tensor([0.], device=device)
+        total_batch = torch.tensor([0.0], device=device)
+        data_batch = torch.tensor([0.0], device=device)
+        pde_batch = torch.tensor([0.0], device=device)
+        border_batch = torch.tensor([0.0], device=device)
         model.train()  # on dit qu'on va entrainer (on a le dropout)
-        # for batch in torch.tensor([k for k in range(nb_batch)], device=device):
-        for batch, X_pde_batch in enumerate(dataloader):
-            X_pde_batch = X_pde_batch.to(device).requires_grad_()
-            
-
+        for batch in torch.tensor([k for k in range(nb_batch)], device=device):
             with torch.cuda.stream(stream_pde):
                 # loss du pde
-                # X_pde_batch = X_pde[batch *
-                #                     batch_size: (batch + 1) * batch_size, :]
+                X_pde_batch = X_pde[batch *
+                                    batch_size: (batch + 1) * batch_size, :]
                 pred_pde = model(X_pde_batch)
                 pred_pde1, pred_pde2, pred_pde3 = pde(
                     pred_pde,
@@ -120,7 +110,7 @@ def train(
                     ya0=ya0,
                     w_0=w_0,
                     L_adim=L_adim,
-                    V_adim=V_adim
+                    V_adim=V_adim,
                 )
                 loss_pde = (
                     torch.mean(pred_pde1**2)
@@ -132,22 +122,27 @@ def train(
                 # loss des points de data
                 pred_data = model(X_train)
                 loss_data = loss(U_train, pred_data)
-                
 
             with torch.cuda.stream(stream_border):
                 # loss du border
-               
                 pred_border = model(X_border)
-                goal_border = torch.tensor([-mean_std['u_mean']/mean_std['u_std'], -mean_std['v_mean'] / mean_std['v_std']],
-                    dtype=torch.float32
-                    ).expand(pred_border.shape[0], 2).to(device)
+                goal_border = torch.tensor(
+                    [
+                        -mean_std["u_mean"] / mean_std["u_std"],
+                        -mean_std["v_mean"] / mean_std["v_std"],
+                    ],
+                    dtype=torch.float32,
+                    device=device,
+                ).expand(pred_border.shape[0], 2)
                 loss_border_cylinder = loss(
                     pred_border[:, :2], goal_border)  # (MSE)
-                    
-                
+
             torch.cuda.synchronize()
-            loss_totale = weight_data * loss_data + weight_pde * \
-                loss_pde + weight_border * loss_border_cylinder
+            loss_totale = (
+                weight_data * loss_data
+                + weight_pde * loss_pde
+                + weight_border * loss_border_cylinder
+            )
 
             # Backpropagation
             loss_totale.backward()
@@ -180,8 +175,7 @@ def train(
             ya0=ya0,
             w_0=w_0,
             L_adim=L_adim,
-            V_adim=V_adim
-            
+            V_adim=V_adim,
         )
         with torch.no_grad():
             loss_test_pde = (
@@ -195,14 +189,23 @@ def train(
 
             # loss des bords
             pred_border_test = model(X_border_test)
-            goal_border_test = torch.tensor([-mean_std['u_mean']/mean_std['u_std'], -mean_std['v_mean'] /
-                                            mean_std['v_std']], dtype=torch.float32, device=device).expand(pred_border_test.shape[0], 2)
+            goal_border_test = torch.tensor(
+                [
+                    -mean_std["u_mean"] / mean_std["u_std"],
+                    -mean_std["v_mean"] / mean_std["v_std"],
+                ],
+                dtype=torch.float32,
+                device=device,
+            ).expand(pred_border_test.shape[0], 2)
             loss_test_border = loss(
                 pred_border_test[:, :2], goal_border_test)  # (MSE)
 
             # loss totale
-            loss_test = weight_data * loss_test_data + weight_pde * \
-                loss_test_pde + weight_border * loss_test_border
+            loss_test = (
+                weight_data * loss_test_data
+                + weight_pde * loss_test_pde
+                + weight_border * loss_test_border
+            )
         scheduler.step()
 
         # Weights
@@ -252,7 +255,6 @@ def train(
             file=f,
         )
 
-
         print(f"time: {time.time()-time_start:.0f}s")
         print(f"time: {time.time()-time_start:.0f}s", file=f)
 
@@ -262,7 +264,8 @@ def train(
         if (epoch + 1) % save_rate == 0:
             with torch.no_grad():
                 dossier_midle = Path(
-                    folder_result + f"/epoch{len(train_loss['total'])}")
+                    folder_result + f"/epoch{len(train_loss['total'])}"
+                )
                 dossier_midle.mkdir(parents=True, exist_ok=True)
                 torch.save(
                     {
@@ -272,8 +275,8 @@ def train(
                         "weights": {
                             "weight_data": weight_data,
                             "weight_pde": weight_pde,
-                            "weight_border": weight_border
-                        }
+                            "weight_border": weight_border,
+                        },
                     },
                     folder_result
                     + f"/epoch{len(train_loss['total'])}"
